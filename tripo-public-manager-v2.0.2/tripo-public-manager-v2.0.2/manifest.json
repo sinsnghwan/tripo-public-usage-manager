@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Tripo 공용 사용 관리 툴 2.0.2",
+  "version": "2.0.2",
+  "description": "Tripo 공용 계정 사용량, 실제 로그인 계정, 사용자별 기록을 Supabase 기준으로 관리합니다.",
+  "permissions": [
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://*.tripo3d.ai/*",
+    "https://pacxelpgvhiykoptknfx.supabase.co/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.tripo3d.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Tripo 공용 사용 관리 툴"
+  }
+}

@@ -1,0 +1,4 @@
+body{margin:0;background:#111318;color:#eef0f5;font-family:Arial,"Noto Sans KR",sans-serif}
+main{width:min(720px,calc(100% - 36px));margin:45px auto}
+section{margin-top:20px;padding:20px;border:1px solid #30333c;border-radius:14px;background:#1a1c22}
+dt{margin-top:12px;color:#aeb5c2}dd{margin:5px 0 0;overflow-wrap:anywhere;color:#ffd84a}
