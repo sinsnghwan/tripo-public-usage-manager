@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Tripo 공용 사용 관리 툴 2.0.2",
-  "version": "2.0.2",
+  "name": "Tripo 공용 사용 관리 툴 2.0.12",
+  "version": "2.0.12",
   "description": "Tripo 공용 계정 사용량, 실제 로그인 계정, 사용자별 기록을 Supabase 기준으로 관리합니다.",
   "permissions": [
     "storage",
-    "downloads"
+    "downloads",
+    "notifications"
   ],
   "host_permissions": [
     "https://*.tripo3d.ai/*",

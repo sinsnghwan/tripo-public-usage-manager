@@ -12,6 +12,7 @@
   const LEGACY_BACKUP_KEY = "tripoManagerLegacyBackupV1";
   const PANEL_POSITION_KEY = "tripoCreditManagerPanelPositionV1";
   const COLLAPSE_KEY = "tripoManagerCollapseV2";
+  const LAST_NOTIFIED_VERSION_KEY = "tripoManagerLastNotifiedVersionV2";
 
   const LEGACY_STATE_KEYS = [
     "tripoCreditManagerStateV1",
@@ -22,6 +23,8 @@
   const EMAIL_WAIT_MS = 6500;
   const POLL_MS = 1000;
   const SYNC_MS = 5000;
+  const APP_VERSION_KEY = "tripo-public-manager";
+  const VERSION_CHECK_MS = 15 * 60 * 1000;
 
   const state = {
     identity: null,
@@ -29,6 +32,7 @@
       enabled: false,
       sessionId: null,
       baselineEmail: "",
+      knownSharedEmail: "",
       startedAt: null
     },
     currentCredit: null,
@@ -44,6 +48,13 @@
       myRecords: false,
       teamTotals: false,
       mismatches: true
+    },
+    updateInfo: {
+      available: false,
+      latestVersion: "",
+      downloadUrl: "",
+      message: "",
+      required: false
     }
   };
 
@@ -90,6 +101,88 @@
     if (/Edg\//i.test(ua)) return "Edge";
     if (/Chrome\//i.test(ua)) return "Chrome";
     return "Chromium";
+  }
+
+
+  function compareVersions(a, b) {
+    const pa = String(a || "").split(".").map((part) => Number(part) || 0);
+    const pb = String(b || "").split(".").map((part) => Number(part) || 0);
+    const length = Math.max(pa.length, pb.length);
+
+    for (let index = 0; index < length; index += 1) {
+      const av = pa[index] || 0;
+      const bv = pb[index] || 0;
+      if (av > bv) return 1;
+      if (av < bv) return -1;
+    }
+    return 0;
+  }
+
+  async function notifyUpdateOnce(updateInfo) {
+    const version = String(updateInfo?.latestVersion || "").trim();
+    if (!version) return;
+
+    const stored = await chrome.storage.local.get(LAST_NOTIFIED_VERSION_KEY);
+    if (stored[LAST_NOTIFIED_VERSION_KEY] === version) return;
+
+    const response = await chrome.runtime.sendMessage({
+      type: "TRIPO_SHOW_UPDATE_NOTIFICATION",
+      version,
+      required: updateInfo.required === true,
+      message:
+        updateInfo.message ||
+        (updateInfo.required
+          ? "필수 업데이트가 있습니다. GitHub에서 최신 ZIP을 다시 받은 뒤 기존 확장 프로그램 폴더를 교체하고 새로고침해주세요."
+          : "새 버전이 있습니다. GitHub에서 최신 ZIP을 다시 받은 뒤 기존 확장 프로그램 폴더를 교체하고 새로고침해주세요.")
+    });
+
+    if (response?.ok) {
+      await chrome.storage.local.set({
+        [LAST_NOTIFIED_VERSION_KEY]: version
+      });
+    }
+  }
+
+  async function checkForUpdates(showResult = false) {
+    try {
+      const rows = await api(
+        `tripo_app_versions?app_key=eq.${encodeURIComponent(APP_VERSION_KEY)}&select=latest_version,download_url,update_message,required&limit=1`
+      );
+
+      const row = Array.isArray(rows) ? rows[0] : null;
+      if (!row?.latest_version) {
+        throw new Error("Supabase에 최신 버전 정보가 없습니다.");
+      }
+
+      const currentVersion = chrome.runtime.getManifest().version;
+      const available = compareVersions(currentVersion, row.latest_version) < 0;
+
+      state.updateInfo = {
+        available,
+        latestVersion: row.latest_version,
+        downloadUrl: row.download_url || "",
+        message: row.update_message || "",
+        required: row.required === true
+      };
+
+      if (available) {
+        await notifyUpdateOnce(state.updateInfo);
+      }
+
+      if (showResult && !available) {
+        state.notice = `현재 최신 버전 ${currentVersion}을 사용 중입니다.`;
+        state.error = "";
+      }
+
+      render();
+    } catch (error) {
+      console.warn("[Tripo Manager] update check failed", error);
+
+      if (showResult) {
+        state.error = "업데이트 정보를 확인하지 못했습니다. 잠시 후 다시 시도해주세요.";
+        render();
+      }
+    }
   }
 
   function parseCredit(text) {
@@ -232,28 +325,54 @@
 
   function findCreditElement() {
     const candidates = [];
+
     for (const bolt of document.querySelectorAll('[class*="i-tripo:bolt"]')) {
       if (bolt.closest("#tripo-public-manager-panel")) continue;
-      if (bolt.closest("button")) continue;
+
+      const interactive = bolt.closest('button, a, [role="button"]');
+      const containers = interactive ? [interactive] : [];
 
       let parent = bolt.parentElement;
       for (let depth = 0; parent && depth < 4; depth += 1, parent = parent.parentElement) {
-        for (const node of parent.querySelectorAll(":scope > p, :scope > span")) {
-          const value = parseCredit(node.textContent);
+        if (!containers.includes(parent)) containers.push(parent);
+      }
+
+      for (const container of containers) {
+        const rect = container.getBoundingClientRect();
+        if (!rect.width || !rect.height) continue;
+
+        const text = (container.innerText || container.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
+
+        for (const match of text.matchAll(/\d[\d,]*/g)) {
+          const value = parseCredit(match[0]);
           if (value === null) continue;
-          const rect = node.getBoundingClientRect();
-          if (!rect.width || !rect.height) continue;
 
           let score = 0;
-          if (rect.top < 140) score += 100;
-          if (rect.left > window.innerWidth * 0.55) score += 40;
-          if (/업그레이드|upgrade/i.test(parent.textContent || "")) score += 100;
-          candidates.push({ node, value, score });
+          if (rect.top < 90) score += 500;
+          if (rect.left > window.innerWidth * 0.35) score += 120;
+          if (interactive && container === interactive) score += 100;
+          if (/업그레이드|upgrade/i.test(text)) score += 80;
+
+          if (
+            rect.top >= 90 &&
+            /생성|재생성|텍스처|리깅|애니메이션|generate|create|retry/i.test(text)
+          ) {
+            score -= 600;
+          }
+
+          if (rect.width < 24 && rect.height < 24) score -= 300;
+          candidates.push({ node: container, value, score });
         }
       }
     }
 
-    candidates.sort((a, b) => b.score - a.score);
+    candidates.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.value - a.value;
+    });
+
     return candidates[0] || null;
   }
 
@@ -361,18 +480,61 @@
     return email;
   }
 
+  async function getConfiguredSharedAccount() {
+    const rows = await rpc("tripo_v2_get_shared_account", {
+      ...identityArgs(),
+      p_room_code: ROOM_CODE
+    });
+
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    const email = String(row?.shared_login_id || "").trim().toLowerCase();
+
+    if (!email) {
+      throw new Error("Supabase에 공용 Tripo 계정이 설정되지 않았습니다.");
+    }
+
+    return email;
+  }
+
   async function startSharedMode() {
     if (!state.identity) throw new Error("먼저 사용자 등록을 완료해주세요.");
 
+    if (state.updateInfo.available && state.updateInfo.required) {
+      throw new Error(
+        `필수 업데이트 ${state.updateInfo.latestVersion}가 있습니다.\n` +
+        `업데이트 후 공용 모드를 사용할 수 있습니다.`
+      );
+    }
+
     state.busy = true;
-    state.notice = "Tripo 로그인 계정을 확인하고 있습니다…";
+    state.notice = "공용 계정과 현재 Tripo 계정을 확인하고 있습니다…";
     render();
 
     try {
-      const baselineEmail = await readTripoEmailAutomatically();
+      const configuredSharedEmail = await getConfiguredSharedAccount();
+      const actualEmail = await readTripoEmailAutomatically();
+
+      if (actualEmail.toLowerCase() !== configuredSharedEmail) {
+        state.sharedMode = {
+          enabled: false,
+          sessionId: null,
+          baselineEmail: "",
+          knownSharedEmail: configuredSharedEmail,
+          startedAt: null
+        };
+        await saveSharedMode();
+
+        throw new Error(
+          `현재 로그인 계정은 공용 계정이 아닙니다.\n` +
+          `공용 계정: ${configuredSharedEmail}\n` +
+          `현재 계정: ${actualEmail}\n` +
+          `개인 계정에서는 공용 모드를 켤 수 없습니다.`
+        );
+      }
+
       const rows = await rpc("tripo_v2_start_session", {
         ...identityArgs(),
-        p_baseline_login_id: baselineEmail,
+        p_baseline_login_id: configuredSharedEmail,
         p_room_code: ROOM_CODE,
         p_browser_name: browserName()
       });
@@ -381,10 +543,11 @@
       state.sharedMode = {
         enabled: true,
         sessionId: row.session_id,
-        baselineEmail,
+        baselineEmail: configuredSharedEmail,
+        knownSharedEmail: configuredSharedEmail,
         startedAt: row.started_at || nowIso()
       };
-      state.notice = `공용 모드 ON · 기준 계정 ${baselineEmail}`;
+      state.notice = `공용 모드 ON · 기준 계정 ${configuredSharedEmail}`;
       state.error = "";
       await saveSharedMode();
     } finally {
@@ -410,6 +573,10 @@
       enabled: false,
       sessionId: null,
       baselineEmail: "",
+      knownSharedEmail:
+        state.sharedMode.knownSharedEmail ||
+        state.sharedMode.baselineEmail ||
+        "",
       startedAt: null
     };
     await saveSharedMode();
@@ -629,8 +796,9 @@
   async function exportExcelFromServer() {
     if (!state.identity) throw new Error("사용자 등록이 필요합니다.");
 
-    const rows = await rpc("tripo_v2_get_export", {
-      ...identityArgs()
+    const rows = await rpc("tripo_v2_get_export_all", {
+      ...identityArgs(),
+      p_room_code: ROOM_CODE
     });
     const result = Array.isArray(rows) ? rows[0] : rows;
     const usage = result?.usage_records || [];
@@ -670,6 +838,10 @@
         event_type: "계정 불일치"
       }))
     ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    if (all.length === 0) {
+      throw new Error("Supabase에 내보낼 전체 사용 기록이 없습니다.");
+    }
 
     const header = [
       "사용자 이름", "사용자 ID", "사용 일시", "작업 종류", "사용량",
@@ -747,6 +919,14 @@
         <div id="tpm-notice" class="tpm-notice"></div>
         <div id="tpm-error" class="tpm-error"></div>
 
+        <div id="tpm-update-card" class="tpm-update-card" hidden>
+          <div>
+            <strong id="tpm-update-title">새 버전이 있습니다.</strong>
+            <div id="tpm-update-message"></div>
+          </div>
+          <button id="tpm-update-download">업데이트 다운로드</button>
+        </div>
+
         <div id="tpm-register" class="tpm-card">
           <strong>최초 사용자 등록</strong>
           <label>소속</label>
@@ -807,6 +987,7 @@
         <div class="actions">
           <button id="tpm-force-credit">현재값을 공용 기준으로</button>
           <button id="tpm-export">엑셀 내보내기</button>
+          <button id="tpm-check-update">업데이트 확인</button>
         </div>
       </div>
       <div id="tpm-overlay" hidden><span>처리 중…</span></div>
@@ -823,6 +1004,12 @@
       body.hidden = !body.hidden;
       panel.querySelector("#tpm-minimize").textContent = body.hidden ? "+" : "−";
     });
+    panel.querySelector("#tpm-update-download").addEventListener("click", () => {
+      const url = state.updateInfo.downloadUrl;
+      if (!url) return;
+      window.open(url, "_blank", "noopener,noreferrer");
+    });
+
     panel.querySelector("#tpm-register-button").addEventListener("click", async () => {
       await runBusy(async () => {
         const name = panel.querySelector("#tpm-name").value.trim();
@@ -856,6 +1043,12 @@
       await runBusy(exportExcelFromServer);
     });
 
+    panel.querySelector("#tpm-check-update").addEventListener("click", async () => {
+      await runBusy(async () => {
+        await checkForUpdates(true);
+      });
+    });
+
     return panel;
   }
 
@@ -876,14 +1069,29 @@
 
   function render() {
     const panel = ensurePanel();
-    const shownCredit = Number.isFinite(state.sharedCredit)
-      ? state.sharedCredit
-      : state.currentCredit;
+    const shownCredit = Number.isFinite(state.currentCredit)
+      ? state.currentCredit
+      : state.sharedCredit;
     panel.querySelector("#tpm-credit-value").textContent =
       shownCredit === null ? "찾는 중…" : shownCredit.toLocaleString("ko-KR");
 
     panel.querySelector("#tpm-notice").textContent = state.notice || "";
     panel.querySelector("#tpm-error").textContent = state.error || "";
+
+    const updateCard = panel.querySelector("#tpm-update-card");
+    const updateTitle = panel.querySelector("#tpm-update-title");
+    const updateMessage = panel.querySelector("#tpm-update-message");
+    updateCard.hidden = !state.updateInfo.available;
+
+    if (state.updateInfo.available) {
+      updateTitle.textContent = state.updateInfo.required
+        ? `필수 업데이트 ${state.updateInfo.latestVersion}`
+        : `새 버전 ${state.updateInfo.latestVersion}`;
+
+      updateMessage.textContent =
+        state.updateInfo.message ||
+        "최신 버전을 설치해주세요.";
+    }
     panel.querySelector("#tpm-register").hidden = Boolean(state.identity);
     panel.querySelector("#tpm-identity").hidden = !state.identity;
     panel.querySelector("#tpm-mode").hidden = !state.identity;
@@ -908,7 +1116,9 @@
     panel.querySelector("#tpm-baseline").textContent =
       state.sharedMode.enabled
         ? `기준 Tripo 계정: ${state.sharedMode.baselineEmail}`
-        : "개인 사용 가능 · 공용 사용량에는 기록되지 않습니다.";
+        : state.sharedMode.knownSharedEmail
+          ? `개인 사용 가능 · 공용 계정 ${state.sharedMode.knownSharedEmail} 사용 시 ON 필요`
+          : "개인 사용 가능 · 공용 계정은 공용 모드를 한 번 켜서 등록해주세요.";
 
     const total = state.myRecords.reduce(
       (sum, row) => sum + Number(row.usage_amount || 0), 0
@@ -1003,12 +1213,42 @@
     const action = extractPaidAction(button);
     if (!action) return;
 
-    // 공용 모드 OFF에서는 Tripo 원래 동작을 절대 막지 않습니다.
-    // 개인 계정 사용은 그대로 허용하고 공용 사용량만 기록하지 않습니다.
+    // 공용 모드 OFF에서도 공용 계정으로 생성되는 기록 누락은 막아야 합니다.
+    // 먼저 원래 클릭을 멈춘 뒤 현재 Tripo 계정을 확인합니다.
     if (!state.sharedMode.enabled) {
-      state.notice = "개인 사용 중 · 공용 사용량에는 기록되지 않습니다.";
-      state.error = "";
-      render();
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      await runBusy(async () => {
+        if (!state.identity) {
+          throw new Error("먼저 사용자 등록을 완료해주세요.");
+        }
+
+        const actualEmail = await readTripoEmailAutomatically();
+        const knownSharedEmail = (
+          state.sharedMode.knownSharedEmail ||
+          state.sharedMode.baselineEmail ||
+          ""
+        ).toLowerCase();
+
+        if (knownSharedEmail && actualEmail.toLowerCase() === knownSharedEmail) {
+          throw new Error(
+            `현재 Tripo 계정은 등록된 공용 계정입니다.\n` +
+            `공용 계정: ${knownSharedEmail}\n` +
+            `공용 사용 모드를 켠 뒤 생성해주세요.`
+          );
+        }
+
+        state.notice =
+          `개인 계정 사용 · 공용 사용량에는 기록되지 않습니다.\n` +
+          `현재 계정: ${actualEmail}`;
+        state.error = "";
+
+        bypassButtons.add(button);
+        button.click();
+        queueMicrotask(() => bypassButtons.delete(button));
+      });
       return;
     }
 
@@ -1040,16 +1280,11 @@
     render();
   }
 
-  async function pageExit() {
-    if (state.sharedMode.enabled) {
-      try { await stopSharedMode("browser_closed"); } catch {}
-    }
-  }
-
   async function start() {
     ensurePanel();
     await loadLocalState();
     render();
+    await checkForUpdates();
 
     if (state.identity) {
       await migrateLegacyOnce();
@@ -1068,8 +1303,11 @@
       await refreshServerData();
     }, SYNC_MS);
 
-    window.addEventListener("pagehide", () => void pageExit());
-    window.addEventListener("beforeunload", () => void pageExit());
+    setInterval(() => {
+      void checkForUpdates(false);
+    }, VERSION_CHECK_MS);
+
+
   }
 
   void start();

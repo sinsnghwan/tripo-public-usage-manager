@@ -65,7 +65,45 @@ details summary { cursor:pointer; color:rgba(255,255,255,.8); font-size:12px; fo
 .empty { padding:8px 0; color:rgba(255,255,255,.45); font-size:11px; }
 .mismatch { padding:8px 0; border-bottom:1px solid rgba(255,255,255,.055); display:flex; flex-direction:column; gap:3px; font-size:10px; }
 .actions { display:grid; grid-template-columns:1fr 1fr; gap:7px; }
+#tpm-check-update { grid-column:1 / -1; }
 #tpm-overlay {
   position:absolute; inset:0; z-index:20; display:flex; align-items:center; justify-content:center;
   background:rgba(10,10,13,.84); backdrop-filter:blur(3px); font-size:13px;
+}
+
+
+.tpm-update-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 11px;
+  border: 1px solid rgba(255, 112, 112, .45);
+  border-radius: 11px;
+  background: rgba(255, 87, 87, .11);
+}
+
+.tpm-update-card strong {
+  display: block;
+  color: #ffb1b1;
+  font-size: 12px;
+}
+
+#tpm-update-message {
+  margin-top: 4px;
+  color: rgba(255,255,255,.72);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-line;
+}
+
+#tpm-update-download {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #ff7373;
+  color: #171717;
+  font-weight: 700;
+  cursor: pointer;
 }
